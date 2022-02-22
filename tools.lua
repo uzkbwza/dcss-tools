@@ -1,7 +1,11 @@
-{
+{  
+    c_persist.seen_weapons = c_persist.seen_weapons or {}
+    use_enemy_tiles = false
+    last_hp = 0
+
     function c_message(text, channel)
         if string.match(text, "!checkdmg") then
-            local item = items.equipped_at(0)
+            local item = convert_weapon(items.equipped_at(0))
             if item == nil or is_valid_weapon(item) then
                 display_damage(item)
             else
@@ -12,7 +16,105 @@
             compare_damage()
         end
     end
-  
+
+    function ready()
+        remember_weapons()
+        get_monsters_in_los()
+        if assess_threat_level(false) > 0 then
+            check_health()
+        end
+        -- assess_threat_level()
+    end
+
+    function check_health()
+        local hp, max = you:hp()
+        if hp == last_hp then return end
+        local diff = hp - last_hp
+        local color
+        local text
+        if diff == 0 then return end
+        if diff > 0 then
+            text = tostring(hp) .. "/" .. tostring(max) .. " (+" .. tostring(diff) .. ")"
+            color = "lightgreen"
+        else
+            text = tostring(hp) .. "/" .. tostring(max) .. " (" .. tostring(diff) .. ")"
+            if hp < max * 0.75 then
+                color = "red"
+            else
+                color = "lightred"
+            end
+            
+        end
+        display_line(text, color)
+        if diff < -(max / 4.0) then
+            crawl.more()
+        end
+        last_hp = hp
+    end
+    
+    function convert_weapon(weap)
+        -- converts from opaque Userdata object to table
+        local name = weap:name()
+        local name_coloured = weap:name_coloured()
+        local ego = weap:ego()
+        local class = weap:class()
+        local subtype = weap:subtype()
+        return { name = function() return name end,
+        name_coloured = function() return name_coloured end,
+        ego = function() return ego end,
+        subtype = function() return subtype end,
+        class = function() return class end,
+        weap_skill = weap.weap_skill,
+        is_unarmed = weap.is_unarmed,
+        description = weap.description,
+        fully_identified = weap.fully_identified,
+        damage = weap.damage,
+        branded = weap.branded,
+        plus = weap.plus,
+        delay = weap.delay,
+        accuracy = weap.accuracy,
+        attr = get_weap_attr(weap) }
+    end
+
+    function get_weap_attr(weap)
+        if string.match(weap.weap_skill, "Blades") or weap.is_ranged then
+            return "Dex"
+        end
+        return "Str"
+    end
+
+    function catalogue_weapon(weap, inventory)
+        c_persist.seen_weapons[weap:name()] = {item = weap, location = inventory and "in your inventory" or location_string() }
+        -- display_line(tostring(#seen_weapons) .. " weapons found")
+        -- list_contents(seen_weapons)
+    end
+
+    function list_contents(arr)
+        if type(arr) ~= "table" then
+            display_line(arr)
+        else
+            for key, value in pairs(arr) do
+                list_contents(key)
+                list_contents(value)
+            end
+        end
+    end
+
+    function location_string()
+        return "on " .. you:branch() .. ":" .. you:depth()
+    end
+
+    function remember_weapons()
+        function catalogue_weapon_arr(array, inventory)
+            for i, item in ipairs(array) do
+                if is_valid_weapon(item) then
+                    catalogue_weapon(convert_weapon(item), inventory)
+                end
+            end
+        end
+        catalogue_weapon_arr(you:floor_items())
+        catalogue_weapon_arr(items:inventory(), true)
+    end
   
     function is_valid_weapon(item) 
         return item:class() == "Hand Weapons" or item:class() == "Magical Staves"
@@ -37,6 +139,7 @@
             fully_identified = true,
             is_useless = false,
             weap_skill = "Unarmed Combat",
+            attr = "Str",
             accuracy = 0,
             plus = 0,
             delay = 10 - 1 * (skill / 5.4),
@@ -54,68 +157,61 @@
         local highest_base_damage_weapon
         local highest_total_damage_weapon
         local items_ = items.inventory()
-        local weapons = { unarmed_data() }
-        function get_weapons_from(tab)
-            if tab ~= nil and tab[0] == nil then
-                for i, item in ipairs(tab) do
-                    if type(item) == "userdata" then
-                        -- display_line((item))
-                        if is_valid_weapon(item) and item.fully_identified and not (item.is_useless) then -- weapon
-                            table.insert(weapons, item)
-                        end
-                    end
-                end
-            end
+        local weapons = { { name = "Unarmed", item = unarmed_data(), location = "attached to your body" } }
+        for name, data in pairs(c_persist.seen_weapons) do
+            
+            table.insert(weapons, { name = name, item = data.item, location = data.location, })
         end
-        get_weapons_from(items.inventory())
-        -- display_line(tostring(items.shopping_list()))
-        get_weapons_from(you.floor_items())
+        -- list_contents(weapons)
 
         -- get_weapons_from(known_weapons)
         -- crawl.mpr(tostring(items.inventory()))
-
-        local base_damage_map = {}
-        local total_damage_map = {}
         
-        for i, item in ipairs(weapons) do
+        for i, data in ipairs(weapons) do
+            -- display_line("got here", "red")
+            -- list_contents(data)
+            local name = data.name
+            local item = data.item
             -- display_line(weapon:name())
             local enemy_stats = { ac = 1, ev = 6 }
             enemy_stats.hit_chance = hit_chance(to_hit(item), enemy_stats.ev)
             local base_damage = get_dpt(item, enemy_stats, false, false)
             local total_damage = (item.branded or is_staff(item)) and get_dpt(item, enemy_stats, true, false) or base_damage
             -- display_line(tostring(base_damage) .. " " .. tostring(total_damage))
-            -- item.base_damage = base_damage
+            data.base_damage = base_damage
+            data.damage = total_damage
             -- item.total_damage = total_damage
-            base_damage_map[item] = base_damage
-            total_damage_map[item] = total_damage
-            if base_damage >= highest_base_damage then
-                highest_base_damage = base_damage
-                highest_base_damage_weapon = item
-            end
+            -- if base_damage >= highest_base_damage then
+            --     highest_base_damage = base_damage
+            --     highest_base_damage_weapon = item
+            -- end
             if total_damage >= highest_total_damage then
                 highest_total_damage = total_damage
-                highest_total_damage_weapon = item
+                highest_total_damage_weapon = data
             end
         end
-        
         -- display_line("Highest damage: " .. highest_base_damage_weapon:name_coloured() .. " at " .. fmt_num(highest_base_damage) .. " damage per 1.0 AUTs", "white")
-        display_line("Highest total (branded) damage: " .. highest_total_damage_weapon:name_coloured() .. " at <lightgreen>" .. fmt_num(base_damage_map[highest_total_damage_weapon]) .. " / " .. fmt_num(total_damage_map[highest_total_damage_weapon]) .. "</lightgreen> damage per 1.0 AUTs", "white")
+        -- display_line(fmt_num(highest_total_damage_weapon.damage) .. "</lightgreen> damage per 1.0 AUTs, found on " .. data.location)
+        display_line("Highest total (branded) damage: " .. highest_total_damage_weapon.item:name_coloured() .. " at <lightgreen>" .. fmt_num(highest_total_damage_weapon.base_damage) .. " / " .. fmt_num(highest_total_damage_weapon.damage) .. "</lightgreen> damage per 1.0 AUTs, found " .. highest_total_damage_weapon.location .. ".", "white")
         crawl.more()
-    
         function sort_predicate(a, b)
-            return total_damage_map[a] > total_damage_map[b]
+            return a.damage > b.damage
         end
-
         table.sort(weapons, sort_predicate)
-        for i, item in ipairs(weapons) do
-            if i > 1 then
-                local damage = fmt_num(base_damage_map[item]) .. " / " .. fmt_num(total_damage_map[item])
-                display_line(tostring(i) .. ". " .. item:name_coloured() .. " - <white>" .. damage .. "</white> dmg")
+        for i, data in ipairs(weapons) do
+            if i > 1 and i <= 10 then
+                local item = data.item
+                local damage = fmt_num(data.base_damage) .. " / " .. fmt_num(data.damage)
+                display_line(tostring(i) .. ". " .. item:name_coloured() .. " - <white>" .. damage .. "</white> dmg, " .. data.location)
+                -- display_line("got here")
             end
         end
     end
 
     function display_line(text, color)
+        if type(text) ~= "string" then
+            text = tostring(text)
+        end
         color = color or "lightgray"
         crawl.message("<"..color..">"..text.."</"..color..">", 0)    
     end
@@ -173,7 +269,7 @@
         end
 
         local hit_chance = enemy_stats.hit_chance * 100
-        local hit_chance_color = "darkgrey"
+        local hit_chance_color = "darkgray"
         if hit_chance >= 10 then
             hit_chance_color = "red"
         end
@@ -239,7 +335,8 @@
             - AC damage reduction[1]
         --]]
         
-        local die_num = item.damage * strength_modifier(max) + 1
+        local die_num = item.damage * attr_modifier(item.attr == "Str" and you.strength() or you.dexterity(), item.max) + 1
+        -- display_line("got here")
         local effective_enchantment = item.plus or 0
 
         if effective_enchantment > 0 then
@@ -304,13 +401,12 @@
         return (base-1) / 2 -- average roll
     end
 
-    function strength_modifier(max)
+    function attr_modifier(attr, max)
         local dice_avg = not max and dice_avg or (function(num_dice, num_sides) return num_dice * num_sides end)
-        local strength = you.strength()
-        if strength > 10 then
-            return (39 + ((dice_avg(1, strength - 8) - 1) * 2)) / 39
-        elseif strength < 10 then
-            return (39 - ((dice_avg(1, 12 - strength) - 1) * 3)) / 39
+        if attr > 10 then
+            return (39 + ((dice_avg(1, attr - 8) - 1) * 2)) / 39
+        elseif attr < 10 then
+            return (39 - ((dice_avg(1, 12 - attr) - 1) * 3)) / 39
         else
             return 1
         end
@@ -376,6 +472,109 @@
 
         return bonuses[item_type] or 0
     end
+
+    monsters_in_los = {}
+    
+    function get_monsters_in_los()
+        monsters_in_los = {}
+        local los = you.los()
+        for x = -los,los do
+            for y = -los,los do
+                local monster = monster.get_monster_at(x,y)
+                if monster and not monster:is_firewood() then
+                    table.insert(monsters_in_los, monster)
+                end
+            end
+        end
+    end
+
+    threat_thresholds = {
+        NONE = 0,
+        LOW = 1,
+        DUBIOUS = 10,
+        HIGH = 20, 
+        ["RUN!!"] = 30,}
+
+    threat_colors = {
+        NONE = "darkgray",
+        LOW = "lightgray",
+        DUBIOUS = "yellow",
+        HIGH = "red", 
+        ["RUN!!"] = "magenta", }
+    
+    previous_threat_level = 0
+    previous_threat_level_name = nil
+
+    function determine_monster_threat(monster)
+        if monster:threat() < 1 or monster:attitude() ~= 0 then return 0 end
+        -- display_line(monster:name())
+        local threat_per_spell = 2
+        local threat = (monster:threat()+1)^2
+        local distance = math.sqrt(monster:x_pos()^2 + monster:y_pos()^2)
+        -- display_line(distance)
+        threat = threat - distance/3
+        local max_hp = tonumber(string.match(monster:max_hp(), "%d+"))
+        -- local you_hp, you_max_hp = you:hp()
+        -- if max_hp and monster:threat() >= 2 then
+        --     threat = threat + (max_hp - you_max_hp) / 2
+        -- end
+        
+        for i, spell in ipairs(monster:spells()) do
+            threat = threat + threat_per_spell
+        end
+        
+        -- local speed_threats = {
+        --     ["very slow"] = -4, 
+        --     ["slow"] = -2, 
+        --     ["normal"] = 0, 
+        --     ["fast"] = 2, 
+        --     ["very fast"] = 4, 
+        --     ["extremely fast"] = 8,}
+
+        -- threat = threat + speed_threats[monster:speed_description()]
+        if threat < 0 then threat = 1 end
+        -- display_line(monster:name() .. " " .. fmt_num(threat))
+        return threat
+    end
+
+    function assess_threat_level(display)
+        local total_threat_level = 0
+        if next(monsters_in_los) == nil then -- if no monsters in sight
+            total_threat_level = 0
+        else
+            local hp, max_hp = you:hp()
+            -- display_line(math.floor(100 * (1 - hp / max_hp)^2))
+            total_threat_level = ((27 - you:xl()) / 4) + (20 * math.max((1 - hp / max_hp), 0.5)^3)
+        end
+        local num_monsters = 0
+        for i, monster in ipairs(monsters_in_los) do
+            local threat = determine_monster_threat(monster)
+            total_threat_level = total_threat_level + threat
+            num_monsters = i
+        end
+
+        total_threat_level = total_threat_level + num_monsters
+        
+
+        local level = "NONE"
+        local col = "darkgray"
+        for level_name, value in pairs(threat_thresholds) do
+            if total_threat_level >= value and threat_thresholds[level] < value then
+                level = level_name
+                col = threat_colors[level]
+            end
+        end
+        -- local displayed_level = total_threat_level > 0 and 10 * math.log(total_threat_level/10) / math.log(2) or 0
+        if (total_threat_level ~= previous_threat_level) and display then
+            crawl.mpr("<" .. col .. ">" .. "DANGER LEVEL: " .. fmt_num(total_threat_level) .. " (" .. level .. ")" .. "</" .. col .. ">", 7)
+            if level ~= previous_threat_level_name and total_threat_level > previous_threat_level and total_threat_level >= threat_thresholds.HIGH then
+                crawl.more()
+            end
+        end
+        previous_threat_level = total_threat_level
+        previous_threat_level_name = level
+        return total_threat_level
+    end
     
     function dice_avg(num_dice, num_sides)
         return ((num_sides + 1) / 2) * num_dice
@@ -400,4 +599,34 @@
     function fmt_num(num)
         return tostring(round_tenths(num))
     end
+
+    function set_tile()
+        local race_tilesets = { ["Demonspawn"] = {"MONS_DEMONSPAWN"},
+            ["Deep Elf"] = {"MONS_ELF", "MONS_DEEP_ELF_SORCERER", "MONS_DEEP_ELF_ARCHER"},
+            ["Spriggan"] = {"MONS_SPRIGGAN"},
+            ["Troll"] = {"MONS_SNORG", "MONS_PURGY", "MONS_TROLL"},
+            ["Hill Orc"] = {"MONS_ORC"}, }
+            
+        function get_tile_from_tileset(name)
+            return race_tilesets[name][crawl.random_range(0, #race_tilesets[name])]
+        end
+        local race_string = race_tilesets[you:race()] and get_tile_from_tileset(you:race()) or "mons_" .. you:race():gsub(" ", "_")
+        if race_string == "" then return end
+        -- local tile_num = crawl.random_range(1, 2)
+        local tile_string = race_string
+        -- display_line(tile_num)
+        -- display_line(tile_string)
+        -- if not c_persist.overwrite_tile or (you.turns() == 0) then
+        c_persist.overwrite_tile = "tile:" .. tile_string
+        -- end
+        crawl.setopt("tile_player_tile = " .. c_persist.overwrite_tile)
+        -- crawl.redraw_screen()
+    end
+    
+
+
+    if use_enemy_tiles then
+        set_tile()
+    end
+
     }
